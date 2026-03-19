@@ -1,0 +1,20 @@
+{
+  "name": "wrigley-dashboard",
+  "version": "1.0.0",
+  "description": "Wrigley Media Group — Email Intelligence Dashboard",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "build": "cd client && npm install && npm run build",
+    "dev": "concurrently \"node server.js\" \"cd client && npm run dev\""
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
