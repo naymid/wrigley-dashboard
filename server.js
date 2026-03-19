@@ -9,6 +9,7 @@ const PORT = process.env.PORT || 3001;
 
 let pool = null;
 let dbReady = false;
+let memoryEvents = []; // fallback when DB isn't connected
 
 async function initDb() {
   if (!process.env.DATABASE_URL) {
@@ -49,17 +50,19 @@ app.use(express.static(path.join(__dirname, 'client/dist')));
 app.post('/api/n8n-webhook/log', async (req, res) => {
   try {
     const { type, emailId } = req.body;
+    console.log(`[${new Date().toISOString()}] ${type} — ${emailId || 'N/A'} — ${req.body.subject || ''}`);
     if (dbReady) {
       const result = await pool.query(
         `INSERT INTO events (type, email_id, data) VALUES ($1, $2, $3) RETURNING id`,
         [type || 'UNKNOWN', emailId || null, req.body]
       );
-      console.log(`[${new Date().toISOString()}] ${type} — ${emailId || 'N/A'} — ${req.body.subject || ''}`);
       return res.json({ success: true, id: result.rows[0].id });
     }
-    // No DB — acknowledge but warn
-    console.warn('Event received but database not connected — event not persisted');
-    res.json({ success: true, warning: 'Database not connected, event not persisted' });
+    // No DB — store in memory so dashboard still works
+    const event = { ...req.body, _id: `${Date.now()}`, receivedAt: new Date().toISOString() };
+    memoryEvents.unshift(event);
+    if (memoryEvents.length > 500) memoryEvents = memoryEvents.slice(0, 500);
+    res.json({ success: true, warning: 'Database not connected, stored in memory only' });
   } catch (err) {
     console.error('Webhook error:', err.message);
     res.status(500).json({ success: false, error: err.message });
@@ -68,7 +71,7 @@ app.post('/api/n8n-webhook/log', async (req, res) => {
 
 app.get('/api/events', async (req, res) => {
   try {
-    if (!dbReady) return res.json([]);
+    if (!dbReady) return res.json(memoryEvents);
     const result = await pool.query(
       `SELECT data || jsonb_build_object('_id', id, 'receivedAt', received_at) AS event
        FROM events
@@ -105,5 +108,6 @@ app.listen(PORT, '0.0.0.0', () => {
 
   initDb().catch(err => {
     console.error('Database connection failed:', err.message);
+    console.error('DATABASE_URL present:', !!process.env.DATABASE_URL);
   });
 });
