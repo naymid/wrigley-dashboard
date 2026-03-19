@@ -274,8 +274,26 @@ body {
   white-space: nowrap;
 }
 
-.activity-meta { display: flex; gap: 16px; flex-wrap: wrap; }
-.activity-email { font-size: 11px; color: var(--text-3); }
+.activity-from { font-size: 11px; color: var(--text-3); margin-bottom: 6px; }
+
+.outcome-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  margin-top: 2px;
+}
+.outcome-icon { font-size: 13px; }
+.outcome-label { }
+.outcome-destination {
+  font-weight: 600;
+  word-break: break-all;
+}
+.outcome-pending {
+  color: var(--text-3) !important;
+  font-weight: 400;
+}
 
 /* ── Badges ── */
 .badge {

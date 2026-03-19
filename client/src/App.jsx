@@ -31,12 +31,11 @@ const CLASSIFICATION_LABELS = {
   GENERAL_INQUIRY:         'General Inquiry',
 }
 
-const EVENT_TYPE_STYLES = {
-  CLASSIFICATION:    { bg: '#1e3a5f', color: '#60a5fa', label: 'Classified' },
-  RESPONSE_SENT:     { bg: '#14532d', color: '#4ade80', label: 'Response Sent' },
-  FORWARDED:         { bg: '#3b1f6e', color: '#c084fc', label: 'Forwarded' },
-  SPAM_BLOCKED:      { bg: '#450a0a', color: '#f87171', label: 'Spam Blocked' },
-  FLAGGED_FOR_REVIEW:{ bg: '#451a03', color: '#fb923c', label: 'Flagged' },
+const OUTCOME_STYLES = {
+  RESPONSE_SENT:      { color: '#4ade80', icon: '↩', label: 'Response sent to' },
+  FORWARDED:          { color: '#c084fc', icon: '→', label: 'Forwarded to' },
+  SPAM_BLOCKED:       { color: '#f87171', icon: '⊘', label: 'Blocked as spam' },
+  FLAGGED_FOR_REVIEW: { color: '#fb923c', icon: '⚑', label: 'Flagged for review' },
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -44,7 +43,7 @@ const EVENT_TYPE_STYLES = {
 function timeAgo(ts) {
   const diff = Date.now() - new Date(ts).getTime()
   const s = Math.floor(diff / 1000)
-  if (s < 60)  return 'just now'
+  if (s < 60)   return 'just now'
   if (s < 3600) return `${Math.floor(s / 60)}m ago`
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`
   return `${Math.floor(s / 86400)}d ago`
@@ -52,6 +51,64 @@ function timeAgo(ts) {
 
 function isToday(ts) {
   return new Date(ts).toDateString() === new Date().toDateString()
+}
+
+// Group raw events by emailId, merging all events for the same email into one record
+function groupByEmail(events) {
+  const map = new Map()
+
+  for (const e of events) {
+    const key = e.emailId || e._id  // fallback for events without emailId
+    if (!map.has(key)) {
+      map.set(key, {
+        emailId: key,
+        subject: null,
+        fromEmail: null,
+        classification: null,
+        outcome: null,         // RESPONSE_SENT | FORWARDED | SPAM_BLOCKED | FLAGGED_FOR_REVIEW
+        outingDestination: null, // the email address it went to
+        firstSeen: null,
+        lastSeen: null,
+      })
+    }
+
+    const record = map.get(key)
+    const ts = e.timestamp || e.receivedAt
+
+    // Track timestamps
+    if (!record.firstSeen || ts < record.firstSeen) record.firstSeen = ts
+    if (!record.lastSeen  || ts > record.lastSeen)  record.lastSeen  = ts
+
+    // Pull shared fields from any event that has them
+    if (e.subject   && !record.subject)   record.subject   = e.subject
+    if (e.fromEmail && !record.fromEmail) record.fromEmail = e.fromEmail
+
+    // Classification
+    if (e.type === 'CLASSIFICATION') {
+      record.classification = e.classification
+    }
+
+    // Outcome — what happened after classification
+    if (e.type === 'RESPONSE_SENT') {
+      record.outcome = 'RESPONSE_SENT'
+      record.outingDestination = e.recipientEmail
+    }
+    if (e.type === 'FORWARDED') {
+      record.outcome = 'FORWARDED'
+      record.outingDestination = e.forwardedTo || e.teamEmail
+    }
+    if (e.type === 'SPAM_BLOCKED') {
+      record.outcome = 'SPAM_BLOCKED'
+    }
+    if (e.type === 'FLAGGED_FOR_REVIEW') {
+      record.outcome = 'FLAGGED_FOR_REVIEW'
+    }
+  }
+
+  // Sort by most recent activity first
+  return Array.from(map.values()).sort(
+    (a, b) => new Date(b.lastSeen) - new Date(a.lastSeen)
+  )
 }
 
 // ── Sub-components ─────────────────────────────────────────────────────────
@@ -66,15 +123,6 @@ function StatCard({ label, value, subtitle, accentColor }) {
   )
 }
 
-function EventBadge({ type }) {
-  const s = EVENT_TYPE_STYLES[type] || { bg: '#1e293b', color: '#94a3b8', label: type }
-  return (
-    <span className="badge" style={{ backgroundColor: s.bg, color: s.color }}>
-      {s.label}
-    </span>
-  )
-}
-
 function ClassBadge({ classification }) {
   const color = CLASSIFICATION_COLORS[classification] || '#94a3b8'
   const label = CLASSIFICATION_LABELS[classification] || classification
@@ -85,22 +133,53 @@ function ClassBadge({ classification }) {
   )
 }
 
-function ActivityItem({ event }) {
-  const ts = event.timestamp || event.receivedAt
+function OutcomeLine({ outcome, destination }) {
+  const style = OUTCOME_STYLES[outcome]
+  if (!style) return null
+
+  const hasDestination = destination && outcome !== 'SPAM_BLOCKED' && outcome !== 'FLAGGED_FOR_REVIEW'
+
+  return (
+    <div className="outcome-line" style={{ color: style.color }}>
+      <span className="outcome-icon">{style.icon}</span>
+      <span className="outcome-label">{style.label}</span>
+      {hasDestination && (
+        <span className="outcome-destination">{destination}</span>
+      )}
+    </div>
+  )
+}
+
+function PendingLine() {
+  return (
+    <div className="outcome-line outcome-pending">
+      <span className="outcome-icon">⋯</span>
+      <span className="outcome-label">Awaiting outcome</span>
+    </div>
+  )
+}
+
+function EmailRow({ record }) {
   return (
     <div className="activity-item">
       <div className="activity-header">
-        <EventBadge type={event.type} />
-        {event.classification && <ClassBadge classification={event.classification} />}
-        <span className="activity-time">{timeAgo(ts)}</span>
+        {record.classification
+          ? <ClassBadge classification={record.classification} />
+          : <span className="badge" style={{ backgroundColor: '#1e293b', color: '#64748b' }}>Unclassified</span>
+        }
+        <span className="activity-time">{timeAgo(record.lastSeen)}</span>
       </div>
-      <div className="activity-subject">{event.subject || '(No subject)'}</div>
-      <div className="activity-meta">
-        {event.fromEmail     && <span className="activity-email">From: {event.fromEmail}</span>}
-        {event.recipientEmail && <span className="activity-email">To: {event.recipientEmail}</span>}
-        {event.forwardedTo   && <span className="activity-email">Fwd → {event.forwardedTo}</span>}
-        {event.teamEmail     && <span className="activity-email">Team: {event.teamEmail}</span>}
-      </div>
+
+      <div className="activity-subject">{record.subject || '(No subject)'}</div>
+
+      {record.fromEmail && (
+        <div className="activity-from">From: {record.fromEmail}</div>
+      )}
+
+      {record.outcome
+        ? <OutcomeLine outcome={record.outcome} destination={record.outingDestination} />
+        : <PendingLine />
+      }
     </div>
   )
 }
@@ -144,15 +223,17 @@ export default function App() {
     return () => clearInterval(id)
   }, [fetchEvents])
 
-  // ── Derived stats ──
-  const classified   = events.filter(e => e.type === 'CLASSIFICATION')
-  const todayCount   = events.filter(e => isToday(e.timestamp || e.receivedAt)).length
-  const spamBlocked  = events.filter(e => e.type === 'SPAM_BLOCKED').length
-  const flagged      = events.filter(e => e.type === 'FLAGGED_FOR_REVIEW').length
+  // ── Derived data ──
+  const emailRecords = groupByEmail(events)
+
+  const classified  = emailRecords.filter(r => r.classification)
+  const todayCount  = emailRecords.filter(r => isToday(r.lastSeen)).length
+  const spamBlocked = emailRecords.filter(r => r.outcome === 'SPAM_BLOCKED').length
+  const flagged     = emailRecords.filter(r => r.outcome === 'FLAGGED_FOR_REVIEW').length
 
   const classCounts = {}
-  classified.forEach(e => {
-    if (e.classification) classCounts[e.classification] = (classCounts[e.classification] || 0) + 1
+  classified.forEach(r => {
+    classCounts[r.classification] = (classCounts[r.classification] || 0) + 1
   })
 
   const chartData = Object.entries(classCounts)
@@ -233,7 +314,6 @@ export default function App() {
             </h2>
             <div className="chart-grid">
 
-              {/* Bar chart */}
               <ResponsiveContainer width="100%" height={260}>
                 <BarChart
                   data={chartData}
@@ -254,11 +334,7 @@ export default function App() {
                     axisLine={false}
                     tickLine={false}
                     tick={({ x, y, payload }) => (
-                      <text
-                        x={x - 4} y={y} dy={4}
-                        fill="#64748b" fontSize={11}
-                        textAnchor="end"
-                      >
+                      <text x={x - 4} y={y} dy={4} fill="#64748b" fontSize={11} textAnchor="end">
                         {CLASSIFICATION_LABELS[payload.value] || payload.value}
                       </text>
                     )}
@@ -266,16 +342,12 @@ export default function App() {
                   <Tooltip content={<ChartTooltip />} cursor={{ fill: 'rgba(255,255,255,0.025)' }} />
                   <Bar dataKey="count" radius={[0, 4, 4, 0]}>
                     {chartData.map(entry => (
-                      <Cell
-                        key={entry.name}
-                        fill={CLASSIFICATION_COLORS[entry.name] || '#64748b'}
-                      />
+                      <Cell key={entry.name} fill={CLASSIFICATION_COLORS[entry.name] || '#64748b'} />
                     ))}
                   </Bar>
                 </BarChart>
               </ResponsiveContainer>
 
-              {/* Breakdown list */}
               <div className="breakdown-list">
                 {chartData.map(({ name, count }) => {
                   const pct = total > 0 ? Math.round((count / total) * 100) : 0
@@ -283,14 +355,9 @@ export default function App() {
                   return (
                     <div key={name} className="breakdown-item">
                       <div className="breakdown-dot" style={{ background: color }} />
-                      <div className="breakdown-label">
-                        {CLASSIFICATION_LABELS[name] || name}
-                      </div>
+                      <div className="breakdown-label">{CLASSIFICATION_LABELS[name] || name}</div>
                       <div className="breakdown-bar-wrap">
-                        <div
-                          className="breakdown-bar"
-                          style={{ width: `${pct}%`, background: color }}
-                        />
+                        <div className="breakdown-bar" style={{ width: `${pct}%`, background: color }} />
                       </div>
                       <div className="breakdown-count">{count}</div>
                       <div className="breakdown-pct">{pct}%</div>
@@ -303,32 +370,27 @@ export default function App() {
           </div>
         )}
 
-        {/* ── Activity Feed ── */}
+        {/* ── Email Feed ── */}
         <div className="section">
           <h2 className="section-title">
-            Live Activity Feed
-            <span className="feed-count">{events.length} events</span>
+            Email Activity
+            <span className="feed-count">{emailRecords.length} emails</span>
           </h2>
           <div className="feed-card">
-            {loading && events.length === 0 ? (
+            {loading && emailRecords.length === 0 ? (
               <div className="empty-state">
                 <div className="empty-icon">⟳</div>
-                <div className="empty-title">Loading events…</div>
+                <div className="empty-title">Loading…</div>
               </div>
-            ) : events.length === 0 ? (
+            ) : emailRecords.length === 0 ? (
               <div className="empty-state">
                 <div className="empty-icon">📭</div>
-                <div className="empty-title">No events yet</div>
-                <div className="empty-sub">
-                  Events will appear here as n8n processes emails in real time
-                </div>
+                <div className="empty-title">No emails yet</div>
+                <div className="empty-sub">Emails will appear here as n8n processes them</div>
               </div>
             ) : (
-              events.map((event, i) => (
-                <ActivityItem
-                  key={event._id || `${event.emailId}-${i}`}
-                  event={event}
-                />
+              emailRecords.map(record => (
+                <EmailRow key={record.emailId} record={record} />
               ))
             )}
           </div>
